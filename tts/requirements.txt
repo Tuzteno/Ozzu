@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+transformers
+torchaudio
+datasets
+soundfile
+sentencepiece
