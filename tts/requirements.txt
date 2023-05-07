@@ -6,3 +6,7 @@ torchaudio
 datasets
 soundfile
 sentencepiece
+websockets
+wsproto
+pika
+pybase64
