@@ -1,0 +1,4 @@
+fastapi>=0.70.0
+websockets
+asyncio
+aiohttp
