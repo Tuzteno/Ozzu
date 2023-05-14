@@ -1,44 +1,68 @@
-const audioContext = new AudioContext();
+const audio = new Audio();
 
-const websocket = new WebSocket('ws://localhost:5001/synthesize');
+const ws = new WebSocket("ws://localhost:5002/ws");
 
-// Wait for user gesture to start AudioContext
-document.addEventListener('click', async () => {
-  await audioContext.resume();
-});
+let pc;
 
-// Connection opened
-websocket.addEventListener('open', (event) => {
-    console.log('Connected to websocket server.');
-    
-    // Create an example audio buffer
-    const audioBuffer = audioContext.createBuffer(2, 44100, 44100);
-    const audioData = audioBuffer.getChannelData(0);
-    for (let i = 0; i < audioData.length; i++) {
-        audioData[i] = Math.sin(i / 10);
+ws.onopen = async () => {
+  // initialize WebRTC connection
+  pc = new RTCPeerConnection();
+
+  // set up audio stream
+  const audioTransceiver = pc.addTransceiver("audio");
+  const audioStream = new MediaStream();
+  audio.srcObject = audioStream;
+  const audioReceiver = audioTransceiver.receiver;
+  audioReceiver.track.onunmute = () => {
+    audioStream.addTrack(audioReceiver.track);
+  };
+
+  // handle audio stream
+  pc.addEventListener("track", (event) => {
+    if (event.track.kind === "audio") {
+      const dataReader = new MediaStreamTrackProcessor(event.track).readable.getReader();
+      dataReader.read().then(function processResult(result) {
+        if (result.done) {
+          dataReader.releaseLock();
+          return;
+        }
+        ws.send(result.value.buffer);
+        return dataReader.read().then(processResult);
+      });
     }
-    const audioBlob = new Blob([audioBuffer.getChannelData(0)]);
-    
-    // Send the audio buffer to the server
-    websocket.send(audioBlob);
-});
+  });
+};
 
-// Listen for messages
-websocket.addEventListener('message', async (event) => {
-    // Decode the audio data received from the server
-    const arrayBuffer = await event.data.arrayBuffer();
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-    // Create a new AudioBufferSourceNode
-    const source = audioContext.createBufferSource();
-    // Set the buffer of the AudioBufferSourceNode
-    source.buffer = audioBuffer;
-    // Connect the AudioBufferSourceNode to the destination (speakers)
-    source.connect(audioContext.destination);
-    // Start playing the audio
-    source.start();
-});
+ws.onmessage = async (event) => {
+  // handle incoming messages from the server
+  const message = JSON.parse(event.data);
+  
+  if (message.type === "offer") {
+    await pc.setRemoteDescription(new RTCSessionDescription({type: "offer", sdp: message.sdp}));
 
-// Connection closed
-websocket.addEventListener('close', (event) => {
-    console.log('Disconnected from websocket server.');
-});
+    // send answer to server
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    ws.send(JSON.stringify({type: "answer", sdp: answer.sdp}));
+  } else if (message.type === "candidate") {
+    const candidate = new RTCIceCandidate({
+      candidate: message.candidate,
+      sdpMid: message.sdpMid,
+      sdpMLineIndex: message.sdpMLineIndex
+    });
+    pc.addIceCandidate(candidate);
+  } else if (event.data instanceof ArrayBuffer) {
+    const arrayBuffer = event.data;
+    audio.srcObject.getTracks().forEach(track => {
+      track.enabled && track.readyState === 'live' && track.write(arrayBuffer)
+    });
+  }
+};
+
+ws.onclose = () => {
+  // close WebRTC connection
+  if (pc) {
+    pc.close();
+  }
+};

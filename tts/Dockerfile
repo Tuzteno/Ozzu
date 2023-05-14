@@ -13,7 +13,7 @@ RUN pip install --trusted-host pypi.python.org -r requirements.txt
 # Copy the rest of the application code into the container at /app
 COPY . /app
 
-# Expose port 80 to the outside world
+# Expose port 5001 to the outside world
 EXPOSE 5001
 
 # Run app.py when the container launches
