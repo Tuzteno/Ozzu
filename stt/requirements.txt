@@ -1,14 +1,3 @@
 fastapi
 uvicorn
-pydantic
 transformers
-torchaudio
-datasets
-soundfile
-sentencepiece
-websockets
-wsproto
-pika
-pybase64
-ffmpeg
-ffmpeg-python
