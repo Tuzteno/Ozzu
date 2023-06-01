@@ -1,58 +1,75 @@
-import logging
-import asyncio
-from datetime import datetime
-import json
 import torch
-import soundfile as sf
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
-from datasets import load_dataset
+import torchaudio
+import numpy as np
 import websockets
-
-app = FastAPI()
-logger = logging.getLogger(__name__)
-
-processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
-model = SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
-vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
-
-# Load the dataset at startup
-embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
+from speechbrain.pretrained import Tacotron2
+from speechbrain.pretrained import HIFIGAN
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import List
 
 class TextRequest(BaseModel):
     text: str
 
-async def send_audio(audio_data):
-    async with websockets.connect('ws://ws:5002/ws/client2') as websocket:
-        print('WebSocket connection established.')
-        await websocket.send(audio_data.cpu().numpy().tobytes())
-        print('Audio data sent to WebSocket server.')
+app = FastAPI()
+tacotron2 = Tacotron2.from_hparams(source="speechbrain/tts-tacotron2-ljspeech", savedir="tmpdir_tts")
+hifi_gan = HIFIGAN.from_hparams(source="speechbrain/tts-hifigan-ljspeech", savedir="tmpdir_vocoder")
+
+def tts(text: str) -> np.ndarray:
+    # Running the TTS
+    mel_output, mel_length, alignment = tacotron2.encode_text(text)
+    # Running the Vocoder (spectrogram-to-waveform)
+    waveforms = hifi_gan.decode_batch(mel_output)
+    return waveforms.squeeze().detach().cpu().numpy()
+
+class WebSocketManager:
+    def __init__(self, uri):
+        self.uri = uri
+        self.websocket = None
+
+    async def connect(self):
+        self.websocket = await websockets.connect(self.uri)
+
+    async def send_binary(self, data):
+        if self.websocket is None:
+            raise Exception("WebSocket is not connected")
+        await self.websocket.send(data)
+
+    async def close(self):
+        if self.websocket is not None:
+            await self.websocket.close()
+            self.websocket = None
+
+# Set up WebSocketManager
+websocket_manager = WebSocketManager('ws://10.147.20.23:5002/ws')
+
+@app.on_event("startup")
+async def startup_event():
+    # Connect to the WebSocket server
+    await websocket_manager.connect()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    # Close the WebSocket connection
+    await websocket_manager.close()
 
 @app.post("/synthesize")
-async def synthesize(request: TextRequest):
-     if not request.text:
-         raise HTTPException(status_code=400, detail="Text cannot be empty")
-     if len(request.text) > 500:
-         raise HTTPException(status_code=400, detail="Text is too long")
-     try:
-         # Generate speech waveform
-         inputs = processor(text=request.text, return_tensors="pt")
-         speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
-         speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
+async def convert_text_to_speech(text_request: TextRequest):
+    try:
+        waveforms = tts(text_request.text)
 
-         # Send speech waveform to WebSocket server
-         asyncio.create_task(send_audio(speech))
+        # Send audio waveform to WebSocket server
+        await websocket_manager.send_binary(waveforms.tobytes())
 
-         # Write speech waveform to WAV file
-         now = datetime.now()
-         timestamp = now.strftime("%Y%m%d_%H%M%S")
-         output_file = f"speech_{timestamp}.wav"
-         sf.write(output_file, speech.cpu().numpy(), 16000)
+        # Save audio to a file
+        filename = "/app/audio.wav"
+        sample_rate = 22050  # Sample rate of the audio (22050 Hz)
+        waveforms_tensor = torch.from_numpy(waveforms)[None, :]
+        torchaudio.save(filename, waveforms_tensor, sample_rate)
 
-         # Return response with output text
-         return {"result": "success", "output_text": request.text}
-
-     except Exception as e:
-         logger.exception(f"Error generating speech: {str(e)}")
-         raise HTTPException(status_code=500, detail="Error generating speech")
+        return FileResponse(filename, media_type="audio/wav")
+    except Exception as e:
+        error_message = f"Error: {str(e)}"
+        print(error_message)
+        return {"error": error_message}
