@@ -1,34 +1,31 @@
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from transformers import Wav2Vec2ForCTC
+from fastapi import FastAPI, UploadFile, HTTPException, File
+from speechbrain.pretrained import EncoderDecoderASR
+from pydantic import BaseModel
+import os
 
 app = FastAPI()
 
-model = Wav2Vec2ForCTC.from_pretrained("voidful/wav2vec2-xlsr-multilingual-56")
+class TranscriptionResponse(BaseModel):
+    transcription: str
 
-@app.post("/transcription")
-async def convert_audio_to_text(file: UploadFile):
-    """Converts an audio file to text.
+@app.on_event("startup")
+async def startup_event():
+    global asr_model
+    asr_model = EncoderDecoderASR.from_hparams(source="speechbrain/asr-wav2vec2-commonvoice-en", savedir="pretrained_models/asr-wav2vec2-commonvoice-en")
 
-    Args:
-        file: The audio file to convert.
-
-    Returns:
-        The transcript of the audio file.
-
-    """
-    # Load the audio file.
+@app.post("/transcribe/", response_model=TranscriptionResponse)
+async def transcribe_audio(audio_file: UploadFile = File(...)):
     try:
-        audio = await file.read()
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="File not found.")
+        # Write out the audio file to disk
+        with open(audio_file.filename, 'wb') as buffer:
+            buffer.write(audio_file.file.read())
 
-    # Convert the audio to text.
-    try:
-        transcript = model.predict(audio)
+        # Transcribe the audio file
+        transcription = asr_model.transcribe_file(audio_file.filename)
+
+        # Delete the audio file from disk
+        os.remove(audio_file.filename)
+
+        return TranscriptionResponse(transcription=transcription)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-    # Return the transcript.
-    return {"transcript": transcript}
-
