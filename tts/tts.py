@@ -1,75 +1,44 @@
 import torch
-import torchaudio
-import numpy as np
+import soundfile as sf
+import asyncio
 import websockets
-from speechbrain.pretrained import Tacotron2
-from speechbrain.pretrained import HIFIGAN
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, BackgroundTasks
+from transformers import AutoTokenizer, AutoModelWithLMHead
 from pydantic import BaseModel
-from typing import List
-
-class TextRequest(BaseModel):
-    text: str
 
 app = FastAPI()
-tacotron2 = Tacotron2.from_hparams(source="speechbrain/tts-tacotron2-ljspeech", savedir="tmpdir_tts")
-hifi_gan = HIFIGAN.from_hparams(source="speechbrain/tts-hifigan-ljspeech", savedir="tmpdir_vocoder")
 
-def tts(text: str) -> np.ndarray:
-    # Running the TTS
-    mel_output, mel_length, alignment = tacotron2.encode_text(text)
-    # Running the Vocoder (spectrogram-to-waveform)
-    waveforms = hifi_gan.decode_batch(mel_output)
-    return waveforms.squeeze().detach().cpu().numpy()
+# Load the TTS model and tokenizer
+model = AutoModelWithLMHead.from_pretrained("microsoft/speecht5_tts")
+tokenizer = AutoTokenizer.from_pretrained("microsoft/speecht5_tts")
 
-class WebSocketManager:
-    def __init__(self, uri):
-        self.uri = uri
-        self.websocket = None
+class Data(BaseModel):
+    text: str
 
-    async def connect(self):
-        self.websocket = await websockets.connect(self.uri)
+CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
-    async def send_binary(self, data):
-        if self.websocket is None:
-            raise Exception("WebSocket is not connected")
-        await self.websocket.send(data)
+async def send_audio_to_server(audio_data: bytes):
+    uri = "ws://yourwebsocketserver.com"  # Replace with your server's URL
+    async with websockets.connect(uri) as websocket:
+        # Split the audio data into chunks and send each one
+        for i in range(0, len(audio_data), CHUNK_SIZE):
+            chunk = audio_data[i:i+CHUNK_SIZE]
+            await websocket.send(chunk)
 
-    async def close(self):
-        if self.websocket is not None:
-            await self.websocket.close()
-            self.websocket = None
+@app.post("/tts")
+async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
+    # Generate the TTS audio
+    inputs = tokenizer.encode(data.text, return_tensors="pt")
+    with torch.no_grad():
+        prediction = model.generate(inputs, max_length=800, temperature=0.7, num_return_sequences=1)
 
-# Set up WebSocketManager
-websocket_manager = WebSocketManager('ws://10.147.20.23:5002/ws')
+    # Save audio to a .wav file for troubleshooting
+    sf.write('audio.wav', prediction[0].numpy(), 22050)
 
-@app.on_event("startup")
-async def startup_event():
-    # Connect to the WebSocket server
-    await websocket_manager.connect()
+    # Convert tensor to bytes
+    audio_data = prediction.tobytes()
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    # Close the WebSocket connection
-    await websocket_manager.close()
+    # Send audio data to another server in the background
+    background_tasks.add_task(send_audio_to_server, audio_data)
 
-@app.post("/synthesize")
-async def convert_text_to_speech(text_request: TextRequest):
-    try:
-        waveforms = tts(text_request.text)
-
-        # Send audio waveform to WebSocket server
-        await websocket_manager.send_binary(waveforms.tobytes())
-
-        # Save audio to a file
-        filename = "/app/audio.wav"
-        sample_rate = 22050  # Sample rate of the audio (22050 Hz)
-        waveforms_tensor = torch.from_numpy(waveforms)[None, :]
-        torchaudio.save(filename, waveforms_tensor, sample_rate)
-
-        return FileResponse(filename, media_type="audio/wav")
-    except Exception as e:
-        error_message = f"Error: {str(e)}"
-        print(error_message)
-        return {"error": error_message}
+    return {"status": "Audio data sent"}
