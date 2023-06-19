@@ -1,16 +1,23 @@
 import torch
-import soundfile as sf
 import asyncio
 import websockets
+import numpy as np
+import soundfile as sf
 from fastapi import FastAPI, BackgroundTasks
-from transformers import AutoTokenizer, AutoModelWithLMHead
 from pydantic import BaseModel
+from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
+from datasets import load_dataset
 
 app = FastAPI()
 
-# Load the TTS model and tokenizer
-model = AutoModelWithLMHead.from_pretrained("microsoft/speecht5_tts")
-tokenizer = AutoTokenizer.from_pretrained("microsoft/speecht5_tts")
+# Load the TTS model, processor and vocoder
+processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
+model = SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
+vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
+
+# Load xvector containing speaker's voice characteristics from a dataset
+embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
+speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
 class Data(BaseModel):
     text: str
@@ -18,7 +25,7 @@ class Data(BaseModel):
 CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
 async def send_audio_to_server(audio_data: bytes):
-    uri = "ws://yourwebsocketserver.com"  # Replace with your server's URL
+    uri = "ws://tts:5002ws"  # Replace with your server's URL
     async with websockets.connect(uri) as websocket:
         # Split the audio data into chunks and send each one
         for i in range(0, len(audio_data), CHUNK_SIZE):
@@ -28,15 +35,14 @@ async def send_audio_to_server(audio_data: bytes):
 @app.post("/tts")
 async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
     # Generate the TTS audio
-    inputs = tokenizer.encode(data.text, return_tensors="pt")
-    with torch.no_grad():
-        prediction = model.generate(inputs, max_length=800, temperature=0.7, num_return_sequences=1)
-
+    inputs = processor(text=data.text, return_tensors="pt")
+    speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
+    
     # Save audio to a .wav file for troubleshooting
-    sf.write('audio.wav', prediction[0].numpy(), 22050)
+    sf.write('audio.wav', speech.numpy(), samplerate=16000)
 
-    # Convert tensor to bytes
-    audio_data = prediction.tobytes()
+    # Convert waveform to bytes
+    audio_data = speech.numpy().astype(np.int16).tobytes()
 
     # Send audio data to another server in the background
     background_tasks.add_task(send_audio_to_server, audio_data)
