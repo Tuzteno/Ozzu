@@ -25,17 +25,15 @@ class Data(BaseModel):
 
 CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
-async def send_audio_to_server(audio_data: bytes):
-    uri = "ws://ws:5002/ws"  # Replace with your WebSocket server's URI
+async def send_audio_to_server(audio_data: bytes, websocket: websockets.WebSocketClientProtocol):
     try:
-        async with websockets.connect(uri) as websocket:
-            writer = await websocket.send()
-            for i in range(0, len(audio_data), CHUNK_SIZE):
-                chunk = audio_data[i:i+CHUNK_SIZE]
-                await writer.drain()  # Ensure the stream buffer is flushed
-                writer.write(chunk)
+        writer = await websocket.send()
+        for i in range(0, len(audio_data), CHUNK_SIZE):
+            chunk = audio_data[i:i+CHUNK_SIZE]
+            await writer.drain()  # Ensure the stream buffer is flushed
+            writer.write(chunk)
 
-            await writer.drain()  # Ensure all data is sent
+        await writer.drain()  # Ensure all data is sent
     except websockets.exceptions.ConnectionClosed:
         logging.error("WebSocket connection closed")
 
@@ -52,8 +50,15 @@ async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
         # Convert waveform to bytes
         audio_data = speech.numpy().astype(np.int16).tobytes()
 
-        # Send audio data to another server in the background
-        background_tasks.add_task(send_audio_to_server, audio_data)
+        # Establish the WebSocket connection
+        uri = "ws://your-websocket-server-uri"  # Replace with your WebSocket server's URI
+        websocket = await websockets.connect(uri)
+
+        # Send audio data to the WebSocket server
+        await send_audio_to_server(audio_data, websocket)
+
+        # Close the WebSocket connection
+        await websocket.close()
 
         return {"status": "Audio data sent"}
     except Exception as e:
