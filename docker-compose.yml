@@ -22,7 +22,7 @@ services:
     ports:
       - "5001:5001"
 
-  tts:
+  stt:
     build:
       context: ./stt
       dockerfile: Dockerfile
