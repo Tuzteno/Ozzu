@@ -4,7 +4,8 @@ socket.binaryType = 'arraybuffer';  // We're working with binary data
 
 // Audio context and queue for audio data
 let audioCtx = new AudioContext({ sampleRate: 16000 });
-let audioQueue = [];
+let bufferQueue = [];
+let lastEndTime = 0;
 
 // Connection opened
 socket.addEventListener('open', (event) => {
@@ -28,24 +29,10 @@ socket.addEventListener('message', (event) => {
     let audioData = Array.from(dataView).map(n => n / 32768);  // Normalize to range [-1, 1]
 
     // Queue the audio data for playback
-    audioQueue.push(audioData);
-
-    // If audio is not currently playing, start playback
-    if (audioCtx.state === 'suspended') {
-        playAudio();
-    }
+    queueAudio(audioData);
 });
 
-function playAudio() {
-    // If there's no audio data left, stop playback
-    if (audioQueue.length === 0) {
-        audioCtx.suspend();
-        return;
-    }
-
-    // Get the next chunk of audio data from the queue
-    let audioData = audioQueue.shift();
-
+function queueAudio(audioData) {
     // Create an audio buffer and source
     let audioBuffer = audioCtx.createBuffer(1, audioData.length, audioCtx.sampleRate);
     let source = audioCtx.createBufferSource();
@@ -54,12 +41,25 @@ function playAudio() {
     // Copy audioData to buffer
     audioBuffer.copyToChannel(Float32Array.from(audioData), 0);
 
-    // Connect source to output and start playback
+    // Connect source to output
     source.connect(audioCtx.destination);
-    source.start();
 
-    // When this chunk finishes playing, start the next one
-    source.onended = playAudio;
+    if (audioCtx.currentTime > lastEndTime) {
+        lastEndTime = audioCtx.currentTime;
+    }
+
+    source.start(lastEndTime);
+    lastEndTime += audioBuffer.duration;
+
+    // When this chunk finishes playing, remove it from the queue
+    source.onended = () => {
+        bufferQueue.shift();
+        if (bufferQueue.length === 0) {
+            lastEndTime = audioCtx.currentTime;
+        }
+    };
+
+    bufferQueue.push(source);
 }
 
 // Start audio context (must be resumed in response to user interaction)
