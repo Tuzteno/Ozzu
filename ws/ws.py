@@ -24,6 +24,12 @@ async def websocket_endpoint(websocket: WebSocket):
             # Receive data sent by a client.
             message = await websocket.receive()
 
+            if message["type"] == "websocket.disconnect":
+                # WebSocket connection closed by the client.
+                connected_clients.remove(websocket)
+                logger.info(f"A client disconnected. {len(connected_clients)} client(s) remaining.")
+                break
+
             if message["type"] == "websocket.receive":
                 # Process the received message.
                 if message.get("text"):
@@ -40,6 +46,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.warning("Received message without 'text' or 'bytes' field.")
 
     except WebSocketDisconnect:
-        # WebSocket connection closed by the client.
+        # WebSocket connection closed unexpectedly.
         connected_clients.remove(websocket)
-        logger.info(f"A client disconnected. {len(connected_clients)} client(s) remaining.")
+        logger.info(f"A client disconnected unexpectedly. {len(connected_clients)} client(s) remaining.")
