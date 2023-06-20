@@ -27,11 +27,11 @@ async def asr(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail="Unable to load audio file.")
     
     # Preprocess audio
-    inputs = processor(speech, return_tensors="pt", padding=True)
+    inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000)
 
     # Make prediction
     with torch.no_grad():
-        logits = model(**inputs.input_values, attention_mask=inputs.attention_mask).logits
+        logits = model(inputs.input_values).logits
 
     # Decode predicted id into text
     predicted_ids = torch.argmax(logits, dim=-1)
