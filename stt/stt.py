@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, HTTPException
+from fastapi import FastAPI, UploadFile, HTTPException, File
 from pydantic import BaseModel
 from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 import torchaudio
