@@ -21,3 +21,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5001:5001"
+
+  tts:
+    build:
+      context: ./stt
+      dockerfile: Dockerfile
+    ports:
+      - "5003:5003"
