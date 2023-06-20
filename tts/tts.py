@@ -28,6 +28,8 @@ async def asr(file: UploadFile = File(...)):
             speech = speech.mean(dim=0)
         # Convert tensor to 1D numpy array
         speech = speech.numpy()[0]
+        # Reshape to remove feature_size dimension
+        speech = speech.reshape(1, 1, speech.shape[-1])
     except Exception as e:
         raise HTTPException(status_code=500, detail="Unable to load audio file.")
     
