@@ -25,7 +25,8 @@ class Data(BaseModel):
 
 CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
-async def send_audio_to_server(audio_data: bytes, uri: str):
+async def send_audio_to_server(audio_data: bytes):
+    uri = "ws://ws:5002/ws"  # Replace with your WebSocket server's URI
     try:
         async with websockets.connect(uri) as websocket:
             writer = await websocket.send()
@@ -52,7 +53,7 @@ async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
         audio_data = speech.numpy().astype(np.int16).tobytes()
 
         # Send audio data to another server in the background
-        background_tasks.add_task(send_audio_to_server, audio_data, uri="ws://tts:5002ws")  # Replace with your server's URL
+        background_tasks.add_task(send_audio_to_server, audio_data)
 
         return {"status": "Audio data sent"}
     except Exception as e:
@@ -62,4 +63,3 @@ async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
-
