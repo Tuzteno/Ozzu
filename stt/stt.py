@@ -1,31 +1,41 @@
-from fastapi import FastAPI, UploadFile, HTTPException, File
-from speechbrain.pretrained import EncoderDecoderASR
+from fastapi import FastAPI, UploadFile, HTTPException
 from pydantic import BaseModel
-import os
+from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
+import torchaudio
+import torch
+
+# Load the pre-trained model and the tokenizer
+processor = Wav2Vec2Processor.from_pretrained("openai/whisper-tiny.en")
+model = Wav2Vec2ForCTC.from_pretrained("openai/whisper-tiny.en")
 
 app = FastAPI()
 
-class TranscriptionResponse(BaseModel):
-    transcription: str
+# Define a response model
+class ASRResponse(BaseModel):
+    text: str
 
-@app.on_event("startup")
-async def startup_event():
-    global asr_model
-    asr_model = EncoderDecoderASR.from_hparams(source="speechbrain/asr-wav2vec2-commonvoice-en", savedir="pretrained_models/asr-wav2vec2-commonvoice-en")
-
-@app.post("/transcribe/", response_model=TranscriptionResponse)
-async def transcribe_audio(audio_file: UploadFile = File(...)):
+@app.post("/asr", response_model=ASRResponse)
+async def asr(file: UploadFile = File(...)):
+    # Check file format
+    if file.filename.split(".")[-1] != "wav":
+        raise HTTPException(status_code=400, detail="Invalid file format. Please upload a .wav file.")
+    
+    # Load audio
     try:
-        # Write out the audio file to disk
-        with open(audio_file.filename, 'wb') as buffer:
-            buffer.write(audio_file.file.read())
-
-        # Transcribe the audio file
-        transcription = asr_model.transcribe_file(audio_file.filename)
-
-        # Delete the audio file from disk
-        os.remove(audio_file.filename)
-
-        return TranscriptionResponse(transcription=transcription)
+        speech, _ = torchaudio.load(file.file)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Unable to load audio file.")
+    
+    # Preprocess audio
+    inputs = processor(speech, return_tensors="pt", padding=True)
+
+    # Make prediction
+    with torch.no_grad():
+        logits = model(**inputs.input_values, attention_mask=inputs.attention_mask).logits
+
+    # Decode predicted id into text
+    predicted_ids = torch.argmax(logits, dim=-1)
+    transcription = processor.decode(predicted_ids[0])
+
+    # Return transcription
+    return {"text": transcription}
