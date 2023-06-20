@@ -1,68 +1,70 @@
-const audio = new Audio();
+// Create a WebSocket connection to the server
+const socket = new WebSocket('ws://localhost:5002/ws');
+socket.binaryType = 'arraybuffer';  // We're working with binary data
 
-const ws = new WebSocket("ws://localhost:5002/ws");
+// Audio context and queue for audio data
+let audioCtx = new AudioContext({ sampleRate: 16000 });
+let audioQueue = [];
 
-let pc;
+// Connection opened
+socket.addEventListener('open', (event) => {
+    console.log("Connected to WebSocket server");
+});
 
-ws.onopen = async () => {
-  // initialize WebRTC connection
-  pc = new RTCPeerConnection();
+// Connection closed
+socket.addEventListener('close', (event) => {
+    console.log("Disconnected from WebSocket server");
+});
 
-  // set up audio stream
-  const audioTransceiver = pc.addTransceiver("audio");
-  const audioStream = new MediaStream();
-  audio.srcObject = audioStream;
-  const audioReceiver = audioTransceiver.receiver;
-  audioReceiver.track.onunmute = () => {
-    audioStream.addTrack(audioReceiver.track);
-  };
+// Connection error
+socket.addEventListener('error', (event) => {
+    console.error("WebSocket error:", event);
+});
 
-  // handle audio stream
-  pc.addEventListener("track", (event) => {
-    if (event.track.kind === "audio") {
-      const dataReader = new MediaStreamTrackProcessor(event.track).readable.getReader();
-      dataReader.read().then(function processResult(result) {
-        if (result.done) {
-          dataReader.releaseLock();
-          return;
-        }
-        ws.send(result.value.buffer);
-        return dataReader.read().then(processResult);
-      });
+// Listen for messages
+socket.addEventListener('message', (event) => {
+    // We're assuming the data is 16-bit integers in little-endian order.
+    let dataView = new Int16Array(event.data);
+    let audioData = Array.from(dataView).map(n => n / 32768);  // Normalize to range [-1, 1]
+
+    // Queue the audio data for playback
+    audioQueue.push(audioData);
+
+    // If audio is not currently playing, start playback
+    if (audioCtx.state === 'suspended') {
+        playAudio();
     }
-  });
-};
+});
 
-ws.onmessage = async (event) => {
-  // handle incoming messages from the server
-  const message = JSON.parse(event.data);
-  
-  if (message.type === "offer") {
-    await pc.setRemoteDescription(new RTCSessionDescription({type: "offer", sdp: message.sdp}));
+function playAudio() {
+    // If there's no audio data left, stop playback
+    if (audioQueue.length === 0) {
+        audioCtx.suspend();
+        return;
+    }
 
-    // send answer to server
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
+    // Get the next chunk of audio data from the queue
+    let audioData = audioQueue.shift();
 
-    ws.send(JSON.stringify({type: "answer", sdp: answer.sdp}));
-  } else if (message.type === "candidate") {
-    const candidate = new RTCIceCandidate({
-      candidate: message.candidate,
-      sdpMid: message.sdpMid,
-      sdpMLineIndex: message.sdpMLineIndex
-    });
-    pc.addIceCandidate(candidate);
-  } else if (event.data instanceof ArrayBuffer) {
-    const arrayBuffer = event.data;
-    audio.srcObject.getTracks().forEach(track => {
-      track.enabled && track.readyState === 'live' && track.write(arrayBuffer)
-    });
-  }
-};
+    // Create an audio buffer and source
+    let audioBuffer = audioCtx.createBuffer(1, audioData.length, audioCtx.sampleRate);
+    let source = audioCtx.createBufferSource();
+    source.buffer = audioBuffer;
 
-ws.onclose = () => {
-  // close WebRTC connection
-  if (pc) {
-    pc.close();
-  }
-};
+    // Copy audioData to buffer
+    audioBuffer.copyToChannel(Float32Array.from(audioData), 0);
+
+    // Connect source to output and start playback
+    source.connect(audioCtx.destination);
+    source.start();
+
+    // When this chunk finishes playing, start the next one
+    source.onended = playAudio;
+}
+
+// Start audio context (must be resumed in response to user interaction)
+document.body.addEventListener('click', () => {
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+});
