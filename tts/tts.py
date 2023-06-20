@@ -3,14 +3,15 @@ import asyncio
 import websockets
 import numpy as np
 import soundfile as sf
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
 from datasets import load_dataset
+import logging
 
 app = FastAPI()
 
-# Load the TTS model, processor and vocoder
+# Load the TTS model, processor, and vocoder
 processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
 model = SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
 vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
@@ -24,27 +25,41 @@ class Data(BaseModel):
 
 CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
-async def send_audio_to_server(audio_data: bytes):
-    uri = "ws://tts:5002ws"  # Replace with your server's URL
-    async with websockets.connect(uri) as websocket:
-        # Split the audio data into chunks and send each one
-        for i in range(0, len(audio_data), CHUNK_SIZE):
-            chunk = audio_data[i:i+CHUNK_SIZE]
-            await websocket.send(chunk)
+async def send_audio_to_server(audio_data: bytes, uri: str):
+    try:
+        async with websockets.connect(uri) as websocket:
+            writer = await websocket.send()
+            for i in range(0, len(audio_data), CHUNK_SIZE):
+                chunk = audio_data[i:i+CHUNK_SIZE]
+                await writer.drain()  # Ensure the stream buffer is flushed
+                writer.write(chunk)
+
+            await writer.drain()  # Ensure all data is sent
+    except websockets.exceptions.ConnectionClosed:
+        logging.error("WebSocket connection closed")
 
 @app.post("/tts")
 async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
-    # Generate the TTS audio
-    inputs = processor(text=data.text, return_tensors="pt")
-    speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
-    
-    # Save audio to a .wav file for troubleshooting
-    sf.write('audio.wav', speech.numpy(), samplerate=16000)
+    try:
+        # Generate the TTS audio
+        inputs = processor(text=data.text, return_tensors="pt")
+        speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
+        
+        # Save audio to a .wav file for troubleshooting
+        sf.write('audio.wav', speech.numpy(), samplerate=16000)
 
-    # Convert waveform to bytes
-    audio_data = speech.numpy().astype(np.int16).tobytes()
+        # Convert waveform to bytes
+        audio_data = speech.numpy().astype(np.int16).tobytes()
 
-    # Send audio data to another server in the background
-    background_tasks.add_task(send_audio_to_server, audio_data)
+        # Send audio data to another server in the background
+        background_tasks.add_task(send_audio_to_server, audio_data, uri="ws://tts:5002ws")  # Replace with your server's URL
 
-    return {"status": "Audio data sent"}
+        return {"status": "Audio data sent"}
+    except Exception as e:
+        logging.error(f"TTS synthesis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="TTS synthesis failed")
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
+
