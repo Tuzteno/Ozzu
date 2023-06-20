@@ -28,7 +28,7 @@ CHUNK_SIZE = 4096  # Size of each chunk in bytes
 
 async def send_audio_to_server(audio_data: bytes, websocket: websockets.WebSocketClientProtocol):
     try:
-        writer = await websocket.send()
+        writer = await websocket.send('')
         for i in range(0, len(audio_data), CHUNK_SIZE):
             chunk = audio_data[i:i+CHUNK_SIZE]
             await writer.drain()  # Ensure the stream buffer is flushed
@@ -52,7 +52,7 @@ async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
         audio_data = speech.numpy().astype(np.int16).tobytes()
 
         # Establish the WebSocket connection
-        uri = "ws://your-websocket-server-uri"  # Replace with your WebSocket server's URI
+        uri = "ws://ws:5002/ws"  # Replace with your WebSocket server's URI
         websocket = await websockets.connect(uri)
 
         # Send audio data to the WebSocket server
