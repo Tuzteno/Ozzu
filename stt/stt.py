@@ -1,42 +1,35 @@
-from fastapi import FastAPI, UploadFile, HTTPException, File
-from pydantic import BaseModel
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import torchaudio
+from fastapi import FastAPI, File, HTTPException
+from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
 import torch
-
-# Load the pre-trained model and the tokenizer
-processor = Wav2Vec2Processor.from_pretrained("openai/whisper-tiny.en")
-model = Wav2Vec2ForCTC.from_pretrained("openai/whisper-tiny.en")
+import soundfile as sf
+import io
 
 app = FastAPI()
 
-# Define a response model
-class ASRResponse(BaseModel):
-    text: str
+# Load pre-trained model and tokenizer
+processor = Wav2Vec2Processor.from_pretrained("openai/whisper-small")
+model = Wav2Vec2ForCTC.from_pretrained("openai/whisper-small")
 
-@app.post("/asr", response_model=ASRResponse)
-async def asr(file: UploadFile = File(...)):
-    # Check file format
-    if file.filename.split(".")[-1] != "wav":
-        raise HTTPException(status_code=400, detail="Invalid file format. Please upload a .wav file.")
-    
+@app.post("/transcribe")
+async def transcribe_audio(audio_file: bytes = File(...)):
     # Load audio
     try:
-        speech, _ = torchaudio.load(file.file, normalize=True)
-        speech = speech.squeeze().T.unsqueeze(0)  # Transpose and add batch dimension
+        # Convert bytes to a stream
+        audio_stream = io.BytesIO(audio_file)
+        # Load audio file with soundfile
+        audio_input, sample_rate = sf.read(audio_stream)
+
+        # Process the audio file
+        inputs = processor(audio_input, sampling_rate=16_000, return_tensors="pt", padding=True)
+
+        # Make a forward pass in the model
+        with torch.no_grad():
+            logits = model(inputs.input_values).logits
+
+        # Take argmax of logits to get predicted ids and decode them.
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = processor.decode(predicted_ids[0])
+        
+        return {"transcription": transcription}
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Unable to load audio file.")
-    
-    # Preprocess audio
-    inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000)
-
-    # Make prediction
-    with torch.no_grad():
-        logits = model(inputs.input_values).logits
-
-    # Decode predicted id into text
-    predicted_ids = torch.argmax(logits, dim=-1)
-    transcription = processor.decode(predicted_ids[0])
-
-    # Return transcription
-    return {"text": transcription}
+        raise HTTPException(status_code=500, detail=str(e))
