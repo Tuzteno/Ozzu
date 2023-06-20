@@ -6,5 +6,7 @@ soundfile
 fastapi
 pydantic
 transformers
-datasets=
+datasets
 uvicorn
+torchaudio
+sentencepiece
