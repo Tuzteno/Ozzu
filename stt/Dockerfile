@@ -17,4 +17,4 @@ COPY . /app
 EXPOSE 5003
 
 # Run app.py when the container launches
-CMD ["uvicorn", "stt:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["uvicorn", "stt:app", "--host", "0.0.0.0", "--port", "5003"]
