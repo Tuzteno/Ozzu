@@ -1,7 +1,10 @@
 torch
-soundfile
 asyncio
 websockets
+numpy
+soundfile
 fastapi
-transformers
 pydantic
+transformers
+datasets=
+uvicorn
