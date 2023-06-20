@@ -1,48 +1,75 @@
-from fastapi import FastAPI, UploadFile, HTTPException, File
-from pydantic import BaseModel
-from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
-import torchaudio
 import torch
-
-# Load the pre-trained model and the tokenizer
-processor = Wav2Vec2Processor.from_pretrained("openai/whisper-tiny.en")
-model = Wav2Vec2ForCTC.from_pretrained("openai/whisper-tiny.en")
+import asyncio
+import websockets
+import numpy as np
+import soundfile as sf
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from pydantic import BaseModel
+from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
+from datasets import load_dataset
+import logging
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
-# Define a response model
-class ASRResponse(BaseModel):
+# Load the TTS model, processor, and vocoder
+processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
+model = SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
+vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
+
+# Load xvector containing speaker's voice characteristics from a dataset
+embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
+speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
+
+class Data(BaseModel):
     text: str
 
-@app.post("/asr", response_model=ASRResponse)
-async def asr(file: UploadFile = File(...)):
-    # Check file format
-    if file.filename.split(".")[-1] != "wav":
-        raise HTTPException(status_code=400, detail="Invalid file format. Please upload a .wav file.")
-    
-    # Load audio
+CHUNK_SIZE = 4096  # Size of each chunk in bytes
+
+# Global websocket variable
+websocket = None
+
+@app.on_event("startup")
+async def startup_event():
+    global websocket
+    uri = "ws://ws:5002/ws"  # Replace with your WebSocket server's URI
+    websocket = await websockets.connect(uri)
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global websocket
+    await websocket.close()
+
+async def send_audio_to_server(audio_data: bytes):
+    global websocket
     try:
-        speech, _ = torchaudio.load(file.file)
-        # Ensure mono audio
-        if speech.shape[0] > 1:
-            speech = speech.mean(dim=0)
-        # Convert tensor to 1D numpy array
-        speech = speech.numpy()[0]
-        # Reshape to remove feature_size dimension
-        speech = speech.reshape(1, 1, speech.shape[-1])
+        for i in range(0, len(audio_data), CHUNK_SIZE):
+            chunk = audio_data[i:i+CHUNK_SIZE]
+            await websocket.send(chunk)
+    except websockets.exceptions.ConnectionClosed:
+        logging.error("WebSocket connection closed")
+
+@app.post("/tts")
+async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
+    try:
+        # Generate the TTS audio
+        inputs = processor(text=data.text, return_tensors="pt")
+        speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
+        
+        # Save audio to a .wav file for troubleshooting
+        sf.write('audio.wav', speech.numpy(), samplerate=16000)
+
+        # Convert waveform to bytes
+        audio_data = speech.numpy().astype(np.int16).tobytes()
+
+        # Send audio data to the WebSocket server
+        await send_audio_to_server(audio_data)
+
+        return {"status": "Audio data sent"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Unable to load audio file.")
-    
-    # Preprocess audio
-    inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000)
+        logging.error(f"TTS synthesis failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="TTS synthesis failed")
 
-    # Make prediction
-    with torch.no_grad():
-        logits = model(inputs.input_values).logits
-
-    # Decode predicted id into text
-    predicted_ids = torch.argmax(logits, dim=-1)
-    transcription = processor.decode(predicted_ids[0])
-
-    # Return transcription
-    return {"text": transcription}
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
