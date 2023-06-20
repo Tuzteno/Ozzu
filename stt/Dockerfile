@@ -14,7 +14,7 @@ RUN pip install --trusted-host pypi.python.org -r requirements.txt
 COPY . /app
 
 # Expose port 80 to the outside world
-EXPOSE 5001
+EXPOSE 5003
 
 # Run app.py when the container launches
-CMD ["uvicorn", "tts:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["uvicorn", "stt:app", "--host", "0.0.0.0", "--port", "5001"]
