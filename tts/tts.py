@@ -23,14 +23,16 @@ async def asr(file: UploadFile = File(...)):
     # Load audio
     try:
         speech, _ = torchaudio.load(file.file)
-        speech = speech.squeeze()  # Ensure audio is mono
-        if len(speech.size()) == 1:
-            speech = speech.unsqueeze(0)  # Add batch dimension
+        # Ensure mono audio
+        if speech.shape[0] > 1:
+            speech = speech.mean(dim=0)
+        # Convert tensor to 1D numpy array
+        speech = speech.numpy()[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail="Unable to load audio file.")
     
     # Preprocess audio
-    inputs = processor(speech.numpy(), return_tensors="pt", padding=True, sampling_rate=16000)
+    inputs = processor(speech, return_tensors="pt", padding=True, sampling_rate=16000)
 
     # Make prediction
     with torch.no_grad():
