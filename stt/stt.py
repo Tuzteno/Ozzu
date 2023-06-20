@@ -22,7 +22,8 @@ async def asr(file: UploadFile = File(...)):
     
     # Load audio
     try:
-        speech, _ = torchaudio.load(file.file)
+        speech, _ = torchaudio.load(file.file, normalize=True)
+        speech = speech.squeeze().T.unsqueeze(0)  # Transpose and add batch dimension
     except Exception as e:
         raise HTTPException(status_code=500, detail="Unable to load audio file.")
     
