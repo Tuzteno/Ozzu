@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
 from datasets import load_dataset
 import logging
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
