@@ -28,3 +28,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5003:5003"
+      
+  cv:
+    build:
+      context: ./cv
+      dockerfile: Dockerfile
+    ports:
+      - "5004:5004"
