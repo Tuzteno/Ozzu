@@ -2,6 +2,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from PIL import Image, UnidentifiedImageError
 from transformers import YolosImageProcessor, YolosForObjectDetection
 import requests
+import torch
 
 app = FastAPI()
 
