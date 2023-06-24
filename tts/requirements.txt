@@ -10,4 +10,4 @@ torchaudio
 sentencepiece
 celery
 datasets
-shutil
+
