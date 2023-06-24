@@ -21,6 +21,15 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5001:5001"
+    depends_on:
+      - rabbitmq
+
+  tts_worker:
+    build:
+      context: ./tts
+      dockerfile: DockerfileWorker
+    depends_on:
+      - rabbitmq
 
   stt:
     build:
@@ -28,10 +37,16 @@ services:
       dockerfile: Dockerfile
     ports:
       - "5003:5003"
-      
+
   cv:
     build:
       context: ./cv
       dockerfile: Dockerfile
     ports:
       - "5004:5004"
+  
+  rabbitmq:
+    image: "rabbitmq:3-management"
+    ports:
+      - "5672:5672"
+      - "15672:15672"
