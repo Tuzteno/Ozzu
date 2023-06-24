@@ -1,75 +1,64 @@
-import torch
-import asyncio
-import websockets
-import numpy as np
-import soundfile as sf
-from fastapi import FastAPI, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, File
 from transformers import SpeechT5Processor, SpeechT5ForTextToSpeech, SpeechT5HifiGan
 from datasets import load_dataset
-import logging
-from fastapi.responses import JSONResponse
+import torch
+import soundfile as sf
+import shutil
+import os
+
+from tasks import run_ffmpeg
 
 app = FastAPI()
 
-# Load the TTS model, processor, and vocoder
 processor = SpeechT5Processor.from_pretrained("microsoft/speecht5_tts")
 model = SpeechT5ForTextToSpeech.from_pretrained("microsoft/speecht5_tts")
 vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan")
 
-# Load xvector containing speaker's voice characteristics from a dataset
 embeddings_dataset = load_dataset("Matthijs/cmu-arctic-xvectors", split="validation")
-speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
-class Data(BaseModel):
-    text: str
+@app.post("/tts")
+async def text_to_speech(text: str):
+    inputs = processor(text=text, return_tensors="pt")
+    speaker_embeddings = torch.tensor(embeddings_dataset[7306]["xvector"]).unsqueeze(0)
 
-CHUNK_SIZE = 4096  # Size of each chunk in bytes
+    speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
 
-# Global websocket variable
-websocket = None
+    audio_path = "speech.wav"
+    sf.write(audio_path, speech.numpy(), samplerate=16000)
+
+    # Create HLS segments
+    segments_path = "segments"
+    os.makedirs(segments_path, exist_ok=True)
+
+    # Convert the audio file into HLS segments
+    cmd = f"ffmpeg -i {audio_path} -c:a libfdk_aac -b:a 128k -f segment -segment_time 10 {segments_path}/output%03d.aac"
+    run_ffmpeg.delay(cmd)
+
+    # Generate HLS playlist (M3U8 file)
+    playlist_path = "playlist.m3u8"
+    with open(playlist_path, "w") as playlist_file:
+        playlist_file.write("#EXTM3U\n")
+        playlist_file.write("#EXT-X-VERSION:3\n")
+        playlist_file.write("#EXT-X-TARGETDURATION:10\n")
+        playlist_file.write("#EXT-X-MEDIA-SEQUENCE:0\n")
+        segment_files = sorted(os.listdir(segments_path))
+        for i, segment_file in enumerate(segment_files):
+            playlist_file.write(f"#EXTINF:10.0,\n")
+            playlist_file.write(f"{segments_path}/{segment_file}\n")
+        playlist_file.write("#EXT-X-ENDLIST\n")
+
+    return {"url": f"http://your-server-address/{playlist_path}"}
+
+@app.get("/audio/{audio_file}")
+async def get_audio(audio_file: str):
+    return File(audio_file)
 
 @app.on_event("startup")
 async def startup_event():
-    global websocket
-    uri = "ws://ws:5002/ws"  # Replace with your WebSocket server's URI
-    websocket = await websockets.connect(uri)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global websocket
-    await websocket.close()
-
-async def send_audio_to_server(audio_data: bytes):
-    global websocket
-    try:
-        for i in range(0, len(audio_data), CHUNK_SIZE):
-            chunk = audio_data[i:i+CHUNK_SIZE]
-            await websocket.send(chunk)
-    except websockets.exceptions.ConnectionClosed:
-        logging.error("WebSocket connection closed")
-
-@app.post("/tts")
-async def tts_endpoint(data: Data, background_tasks: BackgroundTasks):
-    try:
-        # Generate the TTS audio
-        inputs = processor(text=data.text, return_tensors="pt")
-        speech = model.generate_speech(inputs["input_ids"], speaker_embeddings, vocoder=vocoder)
-        
-        # Save audio to a .wav file for troubleshooting
-        sf.write('audio.wav', speech.numpy(), samplerate=16000)
-
-        # Convert waveform to bytes
-        audio_data = speech.numpy().astype(np.int16).tobytes()
-
-        # Send audio data to the WebSocket server
-        await send_audio_to_server(audio_data)
-
-        return {"status": "Audio data sent"}
-    except Exception as e:
-        logging.error(f"TTS synthesis failed: {str(e)}")
-        raise HTTPException(status_code=500, detail="TTS synthesis failed")
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request, exc):
-    return JSONResponse(status_code=exc.status_code, content={"message": exc.detail})
+    # Clean up any previous audio files and segments
+    if os.path.exists("speech.wav"):
+        os.remove("speech.wav")
+    if os.path.exists("segments"):
+        shutil.rmtree("segments")
+    if os.path.exists("playlist.m3u8"):
+        os.remove("playlist.m3u8")
