@@ -1,14 +1,17 @@
+# Use an official Python runtime as a parent image
 FROM python:3.8-slim-buster
-
-ENV PATH=/root/.local/bin:$PATH
-
+# Set the working directory in the container to /app
 WORKDIR /app
+# Copy the current directory contents into the container at /app
 ADD . /app
 
+# Update apt-get and install ffmpeg
 RUN apt-get update && \
     apt-get install -y ffmpeg && \
     rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir -r requirements.txt --user
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Run the command to start the Celery worker
 CMD ["celery", "-A", "tasks", "worker", "--loglevel=info"]
