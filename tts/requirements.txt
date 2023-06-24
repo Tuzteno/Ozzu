@@ -1,7 +1,5 @@
 torch
 asyncio
-websockets
-numpy
 soundfile
 fastapi
 pydantic
@@ -10,3 +8,6 @@ datasets
 uvicorn
 torchaudio
 sentencepiece
+celery
+datasets
+shutil
