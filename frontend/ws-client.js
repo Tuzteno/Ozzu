@@ -1,5 +1,5 @@
 // Create a WebSocket connection to the server
-const socket = new WebSocket('ws://localhost:5002/ws');
+const socket = new WebSocket('ws://localhost:8765'); // Use the correct WebSocket server port
 socket.binaryType = 'arraybuffer';  // We're working with binary data
 
 // Audio context and queue for audio data
@@ -10,6 +10,11 @@ let lastEndTime = 0;
 // Connection opened
 socket.addEventListener('open', (event) => {
     console.log("Connected to WebSocket server");
+    
+    // Start the AudioContext when the WebSocket connection is opened (user action)
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
 });
 
 // Connection closed
@@ -24,9 +29,9 @@ socket.addEventListener('error', (event) => {
 
 // Listen for messages
 socket.addEventListener('message', (event) => {
-    // We're assuming the data is 16-bit integers in little-endian order.
-    let dataView = new Int16Array(event.data);
-    let audioData = Array.from(dataView).map(n => n / 32768);  // Normalize to range [-1, 1]
+    // We're assuming the data is Float32Array.
+    let dataView = new Float32Array(event.data);
+    let audioData = Array.from(dataView);
 
     // Queue the audio data for playback
     queueAudio(audioData);
@@ -61,10 +66,3 @@ function queueAudio(audioData) {
 
     bufferQueue.push(source);
 }
-
-// Start audio context (must be resumed in response to user interaction)
-document.body.addEventListener('click', () => {
-    if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-    }
-});
