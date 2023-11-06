@@ -1,51 +1,59 @@
 import asyncio
-import logging
+import websockets
+import soundfile as sf
+import numpy as np
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+# Initialize a counter for file naming
+file_counter = 0
+connected_clients = set()
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("FastAPI app")
+async def register_client(websocket):
+    connected_clients.add(websocket)
 
-app = FastAPI()
+async def unregister_client(websocket):
+    connected_clients.remove(websocket)
 
-# Maintain a list of connected clients.
-connected_clients = []
+async def send_to_all_clients(message, sender):
+    for client in connected_clients:
+        if client != sender:
+            await client.send(message)
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    # Accept the connection from a client.
-    await websocket.accept()
-
-    # Add the client to the list of connected clients.
-    connected_clients.append(websocket)
-
+async def audio_handler(websocket, path):
+    global file_counter  # Use the global counter
+    await register_client(websocket)
+    
     try:
         while True:
-            # Receive data sent by a client.
-            message = await websocket.receive()
+            audio_data = await websocket.recv()
+            # Process audio_data as needed, e.g., save it to a file, perform further analysis, etc.
+            print("Received audio data:", len(audio_data), "bytes")
 
-            if message["type"] == "websocket.disconnect":
-                # WebSocket connection closed by the client.
-                connected_clients.remove(websocket)
-                logger.info(f"A client disconnected. {len(connected_clients)} client(s) remaining.")
-                break
+            # Convert the audio data to 'float32'
+            audio_data = np.frombuffer(audio_data, dtype='float32')
 
-            if message["type"] == "websocket.receive":
-                # Process the received message.
-                if message.get("text"):
-                    # Send the text message to all other clients.
-                    for client in connected_clients:
-                        if client != websocket:
-                            await client.send_text(message["text"])
-                elif message.get("bytes"):
-                    # Send the binary data to all other clients.
-                    for client in connected_clients:
-                        if client != websocket:
-                            await client.send_bytes(message["bytes"])
-                else:
-                    logger.warning("Received message without 'text' or 'bytes' field.")
+            # Generate a new file name with a consecutive number
+            file_name = f"received_audio_{file_counter}.wav"
 
-    except WebSocketDisconnect:
-        # WebSocket connection closed unexpectedly.
-        connected_clients.remove(websocket)
-        logger.info(f"A client disconnected unexpectedly. {len(connected_clients)} client(s) remaining.")
+            # Save the audio data to the new file
+            with sf.SoundFile(file_name, mode="w", samplerate=16000, channels=1, subtype="FLOAT") as f:
+                f.write(audio_data)
+
+            file_counter += 1  # Increment the counter
+
+            # Broadcast the received audio to all other clients
+            await send_to_all_clients(audio_data.tobytes(), websocket)
+
+    except websockets.ConnectionClosedOK:
+        print(f"WebSocket connection closed by the client: {websocket.remote_address}")
+    except websockets.ConnectionClosedError:
+        print(f"WebSocket connection closed unexpectedly: {websocket.remote_address}")
+    finally:
+        await unregister_client(websocket)
+
+start_server = websockets.serve(audio_handler, "localhost", 8765)  # WebSocket server listens on localhost:8765
+
+async def main():
+    await start_server
+    await asyncio.Future()  # Keep the server running indefinitely
+
+asyncio.get_event_loop().run_until_complete(main())
